@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
-app = FastAPI(title="Technical Interpreter", version="0.4.0")
+app = FastAPI(title="Technical Interpreter", version="0.5.0")
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ class InterpretRequest(BaseModel):
 class InterpretResponse(BaseModel):
     source_text: str
     extracted_information: dict[str, str | None]
+    evidence_origin: dict[str, str]
     missing_information: List[str]
     clarification_questions: List[str]
 
@@ -50,6 +51,7 @@ class ClarifyRequest(BaseModel):
 class ClarifyResponse(BaseModel):
     source_text: str
     extracted_information: dict[str, str | None]
+    evidence_origin: dict[str, str]
     missing_information: List[str]
     next_question: str | None
     completed: bool
@@ -110,7 +112,7 @@ def _extract_people(sentences: list[str]) -> str | None:
 
 def _extract_resolution(sentences: list[str]) -> str | None:
     for sentence in sentences:
-        if re.search(r"\b(restarted|restart|fixed|fix|resolved|resolve|patched|patch)\b", sentence, re.I):
+        if re.search(r"\b(restarted|restart|fixed|fix|resolved|resolve|patched|patch|corrected)\b", sentence, re.I):
             value = re.split(r"\s+and\s+(?=(?:tested|verified|confirmed)\b)", sentence, maxsplit=1, flags=re.I)[0]
             return _clean(value)
     return None
@@ -142,6 +144,10 @@ def _requested_fields(sections: List[str] | None) -> list[FieldDefinition]:
     return [field for field in FIELDS if field.key in requested]
 
 
+def _evidence_origin(extracted: dict[str, str | None]) -> dict[str, str]:
+    return {key: "current_case" for key, value in extracted.items() if value}
+
+
 def interpret_text(text: str, sections: List[str] | None = None) -> InterpretResponse:
     fields = _requested_fields(sections)
     sentences = _sentences(text)
@@ -159,6 +165,7 @@ def interpret_text(text: str, sections: List[str] | None = None) -> InterpretRes
     return InterpretResponse(
         source_text=text,
         extracted_information=extracted,
+        evidence_origin=_evidence_origin(extracted),
         missing_information=missing,
         clarification_questions=questions,
     )
@@ -184,6 +191,7 @@ def clarify_text(
         return ClarifyResponse(
             source_text=source_text,
             extracted_information=extracted,
+            evidence_origin=_evidence_origin(extracted),
             missing_information=[],
             next_question=None,
             completed=True,
@@ -196,10 +204,29 @@ def clarify_text(
     return ClarifyResponse(
         source_text=source_text,
         extracted_information=extracted,
+        evidence_origin=_evidence_origin(extracted),
         missing_information=missing,
         next_question=next_field.question if next_field else None,
         completed=next_field is None,
     )
+
+
+def _summary(extracted: dict[str, str | None], sections: List[str] | None) -> str:
+    keys = {field.key for field in _requested_fields(sections)}
+    parts = []
+    if extracted.get("issue"):
+        parts.append(f"The issue was {extracted['issue'].rstrip('.')}." )
+    if extracted.get("cause"):
+        parts.append(f"The identified cause was {extracted['cause'].rstrip('.')}." )
+    if extracted.get("identification"):
+        parts.append(f"The issue was identified as follows: {extracted['identification'].rstrip('.')}." )
+    if extracted.get("people_involved") and "people_involved" in keys:
+        parts.append(f"The people involved were {extracted['people_involved']}." )
+    if extracted.get("resolution"):
+        parts.append(f"The resolution involved {extracted['resolution'].rstrip('.')}." )
+    if extracted.get("verification"):
+        parts.append(f"The resolution was verified by {extracted['verification'].rstrip('.')}." )
+    return " ".join(parts)
 
 
 def create_documentation(
@@ -215,6 +242,10 @@ def create_documentation(
         )
 
     lines = ["# General Technical Documentation", ""]
+    summary = _summary(extracted_information, sections)
+    if summary:
+        lines.extend(["## Technical Summary", "", summary, ""])
+
     for field in fields:
         lines.extend([f"## {field.title}", "", extracted_information[field.key], ""])
     return "\n".join(lines).rstrip()
