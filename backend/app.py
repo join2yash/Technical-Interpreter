@@ -4,26 +4,27 @@ import re
 from dataclasses import dataclass
 from typing import List
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
-app = FastAPI(title="Technical Interpreter", version="0.3.0")
+app = FastAPI(title="Technical Interpreter", version="0.4.0")
 
 
 @dataclass(frozen=True)
 class FieldDefinition:
     key: str
     question: str
+    title: str
 
 
 FIELDS = (
-    FieldDefinition("issue", "What happened?"),
-    FieldDefinition("cause", "What caused the issue?"),
-    FieldDefinition("identification", "How was the issue detected or reported?"),
-    FieldDefinition("people_involved", "Who was involved?"),
-    FieldDefinition("resolution", "What was done to resolve the issue?"),
-    FieldDefinition("verification", "How was the resolution verified?"),
+    FieldDefinition("issue", "What happened?", "Issue"),
+    FieldDefinition("cause", "What caused the issue?", "Cause"),
+    FieldDefinition("identification", "How was the issue detected or reported?", "Identification"),
+    FieldDefinition("people_involved", "Who was involved?", "People Involved"),
+    FieldDefinition("resolution", "What was done to resolve the issue?", "Resolution"),
+    FieldDefinition("verification", "How was the resolution verified?", "Verification"),
 )
 
 
@@ -52,6 +53,16 @@ class ClarifyResponse(BaseModel):
     missing_information: List[str]
     next_question: str | None
     completed: bool
+
+
+class DocumentRequest(BaseModel):
+    extracted_information: dict[str, str | None]
+    sections: List[str] | None = Field(default=None, description="Sections to include")
+
+
+class DocumentResponse(BaseModel):
+    title: str
+    document_text: str
 
 
 def _sentences(text: str) -> list[str]:
@@ -191,6 +202,24 @@ def clarify_text(
     )
 
 
+def create_documentation(
+    extracted_information: dict[str, str | None],
+    sections: List[str] | None = None,
+) -> str:
+    fields = _requested_fields(sections)
+    missing = [field.title for field in fields if not extracted_information.get(field.key)]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot generate documentation. Missing information: {', '.join(missing)}",
+        )
+
+    lines = ["# General Technical Documentation", ""]
+    for field in fields:
+        lines.extend([f"## {field.title}", "", extracted_information[field.key], ""])
+    return "\n".join(lines).rstrip()
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -209,3 +238,9 @@ def clarify(request: ClarifyRequest) -> ClarifyResponse:
         request.answer,
         request.sections,
     )
+
+
+@app.post("/document", response_model=DocumentResponse)
+def document(request: DocumentRequest) -> DocumentResponse:
+    document_text = create_documentation(request.extracted_information, request.sections)
+    return DocumentResponse(title="General Technical Documentation", document_text=document_text)
