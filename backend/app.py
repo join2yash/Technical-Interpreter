@@ -1,10 +1,11 @@
 """Sprint 1A: Text Technical Interpreter API.
 
-The first implementation deliberately stays small: accept technical text,
-extract the facts that are explicitly present, identify missing information,
-and return targeted clarification questions. It does not invent facts.
+The first implementation is intentionally deterministic. It extracts
+sentence-level evidence from raw technical text, identifies missing sections,
+and asks targeted clarification questions. It never invents facts.
 """
 
+import re
 from dataclasses import dataclass
 from typing import List
 
@@ -12,7 +13,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 
-app = FastAPI(title="Technical Interpreter", version="0.1.0")
+app = FastAPI(title="Technical Interpreter", version="0.1.1")
 
 
 @dataclass(frozen=True)
@@ -47,14 +48,15 @@ class InterpretResponse(BaseModel):
     clarification_questions: List[str]
 
 
-def interpret_text(text: str, sections: List[str] | None = None) -> InterpretResponse:
-    """Extract only evidence-supported information from text.
+def _sentences(text: str) -> list[str]:
+    """Split text into simple sentence-level evidence units."""
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part.strip()]
 
-    This Sprint 1A implementation intentionally does not use an LLM. A later
-    stage can replace the heuristic extraction while keeping this contract.
-    """
+
+def interpret_text(text: str, sections: List[str] | None = None) -> InterpretResponse:
+    """Extract evidence-supported sentences without generating new facts."""
     requested = set(sections or [field.key for field in FIELDS])
-    normalized = text.lower()
+    sentences = _sentences(text)
     extracted: dict[str, str | None] = {}
     missing: list[str] = []
     questions: list[str] = []
@@ -63,9 +65,14 @@ def interpret_text(text: str, sections: List[str] | None = None) -> InterpretRes
         if field.key not in requested:
             continue
 
-        matched = [keyword for keyword in field.keywords if keyword in normalized]
-        if matched:
-            extracted[field.key] = text
+        matches = [
+            sentence
+            for sentence in sentences
+            if any(keyword in sentence.lower() for keyword in field.keywords)
+        ]
+
+        if matches:
+            extracted[field.key] = " ".join(matches)
         else:
             extracted[field.key] = None
             missing.append(field.key)
