@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 
-app = FastAPI(title="Technical Interpreter", version="0.2.1")
+app = FastAPI(title="Technical Interpreter", version="0.3.0")
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,21 @@ class InterpretResponse(BaseModel):
     extracted_information: dict[str, str | None]
     missing_information: List[str]
     clarification_questions: List[str]
+
+
+class ClarifyRequest(BaseModel):
+    source_text: str = Field(min_length=1, description="Original technical text")
+    extracted_information: dict[str, str | None]
+    answer: str = Field(min_length=1, description="Answer to the current clarification question")
+    sections: List[str] | None = Field(default=None, description="Sections to document")
+
+
+class ClarifyResponse(BaseModel):
+    source_text: str
+    extracted_information: dict[str, str | None]
+    missing_information: List[str]
+    next_question: str | None
+    completed: bool
 
 
 def _sentences(text: str) -> list[str]:
@@ -111,16 +126,19 @@ EXTRACTORS = {
 }
 
 
-def interpret_text(text: str, sections: List[str] | None = None) -> InterpretResponse:
+def _requested_fields(sections: List[str] | None) -> list[FieldDefinition]:
     requested = set(sections or [field.key for field in FIELDS])
+    return [field for field in FIELDS if field.key in requested]
+
+
+def interpret_text(text: str, sections: List[str] | None = None) -> InterpretResponse:
+    fields = _requested_fields(sections)
     sentences = _sentences(text)
     extracted: dict[str, str | None] = {}
     missing: list[str] = []
     questions: list[str] = []
 
-    for field in FIELDS:
-        if field.key not in requested:
-            continue
+    for field in fields:
         value = EXTRACTORS[field.key](sentences)
         extracted[field.key] = value
         if value is None:
@@ -135,6 +153,44 @@ def interpret_text(text: str, sections: List[str] | None = None) -> InterpretRes
     )
 
 
+def _next_missing_field(extracted: dict[str, str | None], sections: List[str] | None) -> FieldDefinition | None:
+    for field in _requested_fields(sections):
+        if not extracted.get(field.key):
+            return field
+    return None
+
+
+def clarify_text(
+    source_text: str,
+    extracted_information: dict[str, str | None],
+    answer: str,
+    sections: List[str] | None = None,
+) -> ClarifyResponse:
+    extracted = dict(extracted_information)
+    field = _next_missing_field(extracted, sections)
+
+    if field is None:
+        return ClarifyResponse(
+            source_text=source_text,
+            extracted_information=extracted,
+            missing_information=[],
+            next_question=None,
+            completed=True,
+        )
+
+    extracted[field.key] = _clean(answer)
+    next_field = _next_missing_field(extracted, sections)
+    missing = [item.key for item in _requested_fields(sections) if not extracted.get(item.key)]
+
+    return ClarifyResponse(
+        source_text=source_text,
+        extracted_information=extracted,
+        missing_information=missing,
+        next_question=next_field.question if next_field else None,
+        completed=next_field is None,
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -143,3 +199,13 @@ def health() -> dict[str, str]:
 @app.post("/interpret", response_model=InterpretResponse)
 def interpret(request: InterpretRequest) -> InterpretResponse:
     return interpret_text(request.text, request.sections)
+
+
+@app.post("/clarify", response_model=ClarifyResponse)
+def clarify(request: ClarifyRequest) -> ClarifyResponse:
+    return clarify_text(
+        request.source_text,
+        request.extracted_information,
+        request.answer,
+        request.sections,
+    )
