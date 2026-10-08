@@ -1,0 +1,7 @@
+# You own everything by default
+* @join2yash
+
+# Assign specific folders to specific contributors
+/backend/       @contributor-backend
+/frontend/      @contributor-frontend
+/docs/          @contributor-docs
